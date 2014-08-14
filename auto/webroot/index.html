@@ -1,0 +1,176 @@
+<!DOCTYPE HTML>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title></title>
+</head>
+<body>
+ 
+<input type="button" value="ここを押したら繋がるけどカメラを先に許可しといてね" onclick="webrtcTest.createConnection();">
+
+<style type="text/css">
+video {
+  width: 80px;
+}
+</style>
+
+<script src="class.js"></script>
+<script src="webrtc.js"></script>
+<script src="http://localhost:8888/socket.io/socket.io.js"></script>
+<script type="text/javascript">
+var WebrtcTest = Class.extend({
+  // 初期化
+  init: function() {
+    this.socket = null;
+    this.userId =  null;// 自身のsocket接続ID
+    this.messageTypes =  {};// 通信するメッセージのタイプ
+    this.webRtcInstances = {};// WebRTCのインスタンスたち
+    this.localInstanceKey = 'local';// ローカルのWebRTCインスタンスのキー
+    this.socketReadyState = false;// socket接続ステータス
+    this.connectGroup = location.search;// socket接続グループ: 接続するグループは一旦クエリストリングで決める
+    this.connectUrl = 'http://localhost:8888/';
+  },
+
+  // コネクションをはる
+  createConnection: function() {
+    this.socket = io.connect(this.connectUrl);
+    this.socket.on('connect', this.onConnect.bind(this));
+    this.socket.on('open', this.onOpen.bind(this));
+    this.socket.on('message', this.onMessage.bind(this));
+  },
+
+  // コネクション確立時の処理
+  // @param {Object} event
+  onConnect: function(event) {
+    if (!this.socketReadyState) {
+      this.socket.emit('open', {connectGroup: this.connectGroup});// 接続成功時、接続先のグループを通知する
+    }
+    this.socketReadyState = true;
+  },
+
+  // コネクション確立後の処理
+  // @param {Object} event
+  onOpen: function(event) {
+    this.messageTypes = event.messageTypes;
+    this.userId = event.userId;
+    this.sendMessage(this.messageTypes.allCall, {fromUserId: this.userId});// 接続グループ全員に、新たな接続者がいることを通知する
+  },
+
+  // ローカルのWebRTCのインスタンスを取得する
+  // @return {Object} WebRTCインスタンス 
+  getLocalInstance: function() {
+    return this.getWebrtcInstance(this.localInstanceKey);
+  },
+
+  // WebRTCのインスタンスを取得する
+  // @param {String} id
+  // @return {Object} WebRTCインスタンス 
+  getWebrtcInstance: function(id) {
+    if (!this.webRtcInstances[id]) {
+      this.webRtcInstances[id] = this.createWebrtcInstance(id);
+      if (id !== this.localInstanceKey) {// 共有するためにローカルのストリームを接続する
+        this.webRtcInstances[id].localStream = this.webRtcInstances[this.localInstanceKey].localStream;
+      }
+    }
+    return this.webRtcInstances[id];
+  },
+
+  // WebRTCのインスタンスを生成する
+  // @param {String} id
+  // @return {Object} WebRTCインスタンス 
+  createWebrtcInstance: function(id) {
+    var videoElementId = this.getVideoElementId(id);
+    var video = document.createElement('video');
+    video.id = videoElementId;
+    video.autoplay = true;
+    document.getElementsByTagName('body')[0].appendChild(video);
+    return new Webrtc({
+      videoElementId: videoElementId,
+      iceCandidateCallback: (function(candidate) {
+        this.sendMessage(this.messageTypes.candidate, {sendto: id, fromUserId: this.userId, candidate: candidate});
+      }.bind(this))
+    });
+  },
+
+  // video要素のIDを取得する
+  // @param {String} id
+  // @return {String} video要素のID
+  getVideoElementId: function(id) {
+    return 'video-' + id;
+  },
+
+  // メッセージ受信処理
+  // @param {Object} event
+  onMessage: function(event) {
+    console.log(event);
+
+    // 他のユーザーがログインしたときの応答処理
+    if (this.messageTypes.allCall === event.param.type) {
+      console.log("group all call");
+      var fromUserId = event.param.fromUserId;
+      this.sendMessage(this.messageTypes.callAnswer, {sendto: fromUserId, fromUserId: this.userId});// 応答する
+    }
+
+    // ログイン時に他ユーザー全員にコールしたときの応答があったときの処理
+    if (this.messageTypes.callAnswer === event.param.type) {
+      console.log("call answer");
+      var fromUserId = event.param.fromUserId;
+      var webrtc = this.getWebrtcInstance(fromUserId);
+      if (!webrtc.connect()) {
+        return false;// videoをオンにしてないときとか
+      }
+      webrtc.createSdp("offer", function(sdp) {
+        this.sendMessage(this.messageTypes.offer, {sendto: fromUserId, fromUserId: this.userId, sdp: sdp});// 応答があった人へオファー
+      }.bind(this));
+    }
+
+    // オファーを受け取って、アンサーを返す
+    if (this.messageTypes.offer === event.param.type) {
+      console.log("offer");
+      var fromUserId = event.param.fromUserId;
+      var sdp = event.param.sdp;
+      var webrtc = this.getWebrtcInstance(fromUserId);
+      if (!webrtc.connect()) {
+        return false;// videoをオンにしてないときとか
+      }
+      webrtc.receiveSdp(sdp);
+      webrtc.createSdp("answer", function(sdp) {
+        this.sendMessage(this.messageTypes.answer, {sendto: fromUserId, fromUserId: this.userId, sdp: sdp});// オファーがきたのでアンサー
+      }.bind(this));
+    }
+
+    // アンサーを受け取る
+    if (this.messageTypes.answer === event.param.type) {
+      console.log("answer");
+      var fromUserId = event.param.fromUserId;
+      var webrtc = this.getWebrtcInstance(fromUserId);
+      var sdp = event.param.sdp;
+      webrtc.receiveSdp(sdp);
+    }
+
+    // 経路情報を受け取る
+    if (this.messageTypes.candidate === event.param.type) {
+      console.log("receive candidate");
+      var fromUserId = event.param.fromUserId;
+      var webrtc = this.getWebrtcInstance(fromUserId);
+      webrtc.receiveCandidate(event.param.candidate);// 飛んできた経路情報を取得
+    }
+  },
+
+  // メッセージを通知する
+  // @param {String} messageType
+  // @param {Object} param
+  // @param {Function} callback
+  sendMessage: function(messageType, param, callback) {
+    param.type = messageType;
+    this.socket.emit('message', {messageType: messageType, param: param, callback: callback});
+  }
+});
+
+var webrtcTest = new WebrtcTest();
+var localVideo = webrtcTest.getLocalInstance();
+localVideo.startVideo();
+</script>
+
+</body>
+</html>
