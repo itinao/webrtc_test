@@ -1,0 +1,179 @@
+<!DOCTYPE HTML>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title></title>
+  <script type="text/javascript" src="peer.js"></script>
+  <script type="text/javascript" src="knockout-2.3.0.js"></script>
+</head>
+<body>
+
+<header>Peer.jsサンプル</header>
+<article id="ConnectVM">
+  <p>my connection id: <span data-bind="text: myConnectionId"></span></p>
+  <section>
+    <input type="text" data-bind="value: connectionId">
+    <input type="button" value="接続" data-bind="click: createConnection">
+  </section>
+  <sction data-bind="foreach: connectionList">
+    <p data-bind="text: $data"></p>
+  </sction>
+  <section>
+    <input type="text" data-bind="value: chatValue">
+    <input type="button" value="全員に送信" data-bind="click: sendAllChat">
+  </section>
+  <sction data-bind="foreach: chat">
+    <p><span data-bind="text: $data.sendConnectionId"></span>: <span data-bind="text: $data.value"></span></p>
+  </sction>
+  <div class="drop-area" data-bind="drop: drop, dragover: dragover">
+    ファイルをドラッグ＆ドロップしてね
+  </div>
+  <style type="text/css">
+    .drop-area {
+      width: 200px;
+      height: 200px;
+      background: #999;
+      text-align: center;
+      border: 3px dashed #000;
+    }
+  </style>
+</article>
+
+
+<script type="text/javascript">
+var ConnectVM = new (function() {
+  this.myConnectionId = ko.observable();// 自分のconnection_id
+  this.connectionList = ko.observableArray();// 接続中のconnection_idリスト
+  this.connectionId = ko.observable();// connection_idの入力フォーム
+  this.dataConnections = {};// 接続中のPEERたち
+
+  this.chatValue = ko.observable();// チャットの入力フォーム
+  this.chat = ko.observableArray();// チャットの内容
+
+
+  this.peer = new Peer({host: 'localhost', port: 9000, path: '/myapp', debug: 3});
+
+  // 開始イベントの受信
+  this.peer.on('open', function(id) {
+    console.log("open: " + id);
+    this.myConnectionId(id);
+  }.bind(this));
+
+  // エラーイベントの受信
+  this.peer.on('error', function(err) {
+    console.log("err!!");
+    console.log(err);
+    debugger;
+  }.bind(this));
+
+  // 接続イベントの受信
+  this.peer.on('connection', function(connection) {
+    console.log("connection: " + connection.peer);
+    connection = this.addConnectionEvents(connection);
+    this.dataConnections[connection.peer] = connection;
+  }.bind(this));
+
+
+  // 接続処理
+  this.createConnection = function() {
+    var connectionId = this.connectionId();
+    if (!connectionId || this.myConnectionId() === connectionId) {
+      return;
+    }
+    // TODO: この処理中にmedia connectionのエラーが発生する.
+    var connection = this.peer.connect(connectionId, {
+      label: 'chat',
+      serialization: 'none',
+      reliable: true,
+      metadata: {message: 'hi i want to chat with you!'}
+    });
+    connection = this.addConnectionEvents(connection);
+    this.dataConnections[connectionId] = connection;
+  };
+
+  // コネクション確立時にコールバックを設定する
+  this.addConnectionEvents = function(connection) {
+    // 接続成功
+    connection.on('open', function() {
+      console.log('open: ' + connection.peer);
+      //console.log(connection.metadata.message);//TODO:  これを使ってgrowlなどで接続を通知するとよさそう
+      //connection.send('add connection ' + connection.peer);
+      this.connectionList.push(connection.peer);
+    }.bind(this));
+    // データ受信時
+    connection.on('data', function(data) {
+      // TODO: dataに処理タイプを入れる 
+      console.log('data: ' + data);
+
+      // チャットだったら。。みたいな分岐で処理したい
+      this.chat.push({sendConnectionId: connection.peer, value: data});
+    }.bind(this));
+    // クローズ処理
+    connection.on('close', function() {
+      console.log('close: ' + connection.peer);
+      this.connectionList.remove(connection.peer);
+    }.bind(this));
+    return connection;
+  };
+
+  // 接続中の相手全員にチャット送信
+  this.sendAllChat = function() {
+    var chatValue = this.chatValue();
+    if (!chatValue) {
+      return;
+    }
+    for (var connectionId in this.dataConnections) {
+      this.sendChat(connectionId, chatValue, true);
+    }
+    // 自分のチャットに内容を通知する
+    this.chat.push({sendConnectionId: this.myConnectionId, value: chatValue});
+  };
+  // 特定の相手にチャット送信
+  this.sendChat = function(connectionId, chatValue, disableChatPush) {
+    if (!chatValue) {
+      chatValue = this.chatValue();
+    }
+    if (!chatValue || !connectionId) {
+      return;
+    }
+    this.dataConnections[connectionId].send(chatValue);
+    if (!disableChatPush) {// 自分のチャットに内容を通知する
+      this.chat.push({sendConnectionId: this.myConnectionId, value: chatValue});
+    }
+  };
+
+
+  // ファイルドロップの処理たち
+  this.drop = function(event) {
+    event.preventDefault();// ページの遷移を防止
+    var s = event.dataTransfer.getData("text/plain");// イベントに格納された文字列データを取り出し
+    alert(s);// 表示
+  };
+  this.dragover = function(event) {
+    event.preventDefault();// ドロップを受け付ける
+  };
+
+});
+
+/**
+ *
+ */
+ko.bindingHandlers.drop = {
+  init: function(element, valueAccessor, allBindingsAccessor, viewModel) {
+    var callback = valueAccessor();
+    element.addEventListener('drop', callback, false);
+  }
+};
+ko.bindingHandlers.dragover = {
+  init: function(element, valueAccessor, allBindingsAccessor, viewModel) {
+    var callback = valueAccessor();
+    element.addEventListener('dragover', callback, false);
+  }
+};
+
+
+ko.applyBindings(ConnectVM, document.getElementById('ConnectVM'));
+</script>
+
+</body>
+</html>
