@@ -10,6 +10,7 @@
 
 <header>Peer.jsサンプル</header>
 <article id="ConnectVM">
+
   <p>my connection id: <span data-bind="text: myConnectionId"></span></p>
   <section>
     <input type="text" data-bind="value: connectionId">
@@ -18,6 +19,7 @@
   <sction data-bind="foreach: connectionList">
     <p data-bind="text: $data"></p>
   </sction>
+
   <section>
     <input type="text" data-bind="value: chatValue">
     <input type="button" value="全員に送信" data-bind="click: sendAllChat">
@@ -25,18 +27,33 @@
   <sction data-bind="foreach: chat">
     <p><span data-bind="text: $data.sendConnectionId"></span>: <span data-bind="text: $data.value"></span></p>
   </sction>
-  <div class="drop-area" data-bind="drop: drop, dragover: dragover">
-    ファイルをドラッグ＆ドロップしてね
-  </div>
-  <style type="text/css">
-    .drop-area {
-      width: 200px;
-      height: 200px;
-      background: #999;
-      text-align: center;
-      border: 3px dashed #000;
-    }
-  </style>
+
+  <section>
+    <input id="form" type="file" multiple="multiple">
+    <div class="drop-area" data-bind="drop: drop, dragover: dragover, dragenter: dragenter, dragleave: dragleave, css: {drag: isDragArea}">
+      <p data-bind="if: setFiles().length === 0">ファイルをドラッグ＆ドロップしてね</p>
+      <div data-bind="foreach: setFiles">
+        <p>
+          <span data-bind="text: $data.name"></span>
+          <span data-bind="text: $data.type"></span>
+        </p>
+      </div>
+    </div>
+    <input type="button" value="ファイルを送信" data-bind="click: sendFiles">
+    <style type="text/css">
+      .drop-area {
+        width: 200px;
+        height: 200px;
+        background: #999;
+        text-align: center;
+        border: 3px dashed #000;
+      }
+      .drop-area.drag {
+        border: 3px dashed #fff;
+      }
+    </style>
+  </sction>
+
 </article>
 
 
@@ -51,7 +68,11 @@ var ConnectVM = new (function() {
   this.chat = ko.observableArray();// チャットの内容
 
 
-  this.peer = new Peer({host: 'localhost', port: 9000, path: '/myapp', debug: 3});
+  this.isDragArea = ko.observable();// ドラッグエリアに入っているか
+  this.setFiles = ko.observableArray();// 送信対象として指定したファイル群
+
+
+  this.peer = new Peer({host: 'localhost', port: 9000, path: '/myapp', debug: 2});
 
   // 開始イベントの受信
   this.peer.on('open', function(id) {
@@ -63,7 +84,6 @@ var ConnectVM = new (function() {
   this.peer.on('error', function(err) {
     console.log("err!!");
     console.log(err);
-    debugger;
   }.bind(this));
 
   // 接続イベントの受信
@@ -77,15 +97,16 @@ var ConnectVM = new (function() {
   // 接続処理
   this.createConnection = function() {
     var connectionId = this.connectionId();
+    // 入力なし または 自分のIDを入力した場合にはスルーさせとく
     if (!connectionId || this.myConnectionId() === connectionId) {
       return;
     }
-    // TODO: この処理中にmedia connectionのエラーが発生する.
+    // TODO: この処理中にmedia connectionのエラーが発生するのを調べる
     var connection = this.peer.connect(connectionId, {
       label: 'chat',
       serialization: 'none',
       reliable: true,
-      metadata: {message: 'hi i want to chat with you!'}
+      metadata: {message: 'new connection!!'}
     });
     connection = this.addConnectionEvents(connection);
     this.dataConnections[connectionId] = connection;
@@ -93,26 +114,43 @@ var ConnectVM = new (function() {
 
   // コネクション確立時にコールバックを設定する
   this.addConnectionEvents = function(connection) {
-    // 接続成功
+
+    // 接続成功処理
     connection.on('open', function() {
       console.log('open: ' + connection.peer);
-      //console.log(connection.metadata.message);//TODO:  これを使ってgrowlなどで接続を通知するとよさそう
-      //connection.send('add connection ' + connection.peer);
+      //TODO:  これを使ってgrowlなどで接続を通知するとよさそう
+      //console.log(connection.metadata.message);
       this.connectionList.push(connection.peer);
     }.bind(this));
-    // データ受信時
+
+    // データ受信時の処理
     connection.on('data', function(data) {
-      // TODO: dataに処理タイプを入れる 
+      // TODO: dataに処理タイプを入れる
       console.log('data: ' + data);
 
       // チャットだったら。。みたいな分岐で処理したい
-      this.chat.push({sendConnectionId: connection.peer, value: data});
+      //this.chat.push({sendConnectionId: connection.peer, value: data});
+      if (data.constructor === String) {
+        this.chat.push({sendConnectionId: connection.peer, value: data});
+        var message = new SpeechSynthesisUtterance();
+        message.volume = 1;// ボリューム。0以上1以下の範囲で指定し、1が最大
+        message.rate = 1;// 発話速度を指定。3は3倍の速さで、0.5は半分の速さです。0.1未満、10以上はダメ
+        message.pitch = 2;// 話に対するピッチを指定。０〜２で指定できる
+        message.lang = "ja-JP";// 音声合成の言語を指定
+        message.text = data;// 喋る文字。最大長さは32767文字
+        speechSynthesis.speak(message);
+      } else if (data.constructor === ArrayBuffer) {
+        var blob = new Blob([data], {type: 'image/png'});
+        this.downloadBlob(blob);
+      }
     }.bind(this));
-    // クローズ処理
+
+    // クローズ時の処理
     connection.on('close', function() {
       console.log('close: ' + connection.peer);
       this.connectionList.remove(connection.peer);
     }.bind(this));
+
     return connection;
   };
 
@@ -128,6 +166,7 @@ var ConnectVM = new (function() {
     // 自分のチャットに内容を通知する
     this.chat.push({sendConnectionId: this.myConnectionId, value: chatValue});
   };
+
   // 特定の相手にチャット送信
   this.sendChat = function(connectionId, chatValue, disableChatPush) {
     if (!chatValue) {
@@ -143,21 +182,71 @@ var ConnectVM = new (function() {
   };
 
 
-  // ファイルドロップの処理たち
+  // ファイルドロップの処理
   this.drop = function(event) {
-    event.preventDefault();// ページの遷移を防止
-    var s = event.dataTransfer.getData("text/plain");// イベントに格納された文字列データを取り出し
-    alert(s);// 表示
-  };
+    this.cancelEvent(event);
+    var files = event.dataTransfer.files;
+
+    for (var i = 0, l = files.length; i < l; i++) {
+      var file = files[i];
+      this.setFiles.push(file);
+    }
+    this.isDragArea(false);
+  }.bind(this);
+
+  // ドロップ操作を受け付け
   this.dragover = function(event) {
-    event.preventDefault();// ドロップを受け付ける
+    this.cancelEvent(event);
+  }.bind(this);
+
+  // ドラッグ要素がドロップエリアに入ったとき
+  this.dragenter = function(event) {
+    this.cancelEvent(event);
+    this.isDragArea(true);
+  }.bind(this);
+
+  // ドラッグ要素がドロップエリアから出たとき
+  this.dragleave = function(event) {
+    this.cancelEvent(event);
+    this.isDragArea(false);
+  }.bind(this);
+
+  // イベントをキャンセルする
+  this.cancelEvent = function(event) {
+    event.preventDefault();
+    event.stopPropagation();
   };
 
+  // 設定したファイルを送信する
+  this.sendFiles = function() {
+    var files = this.setFiles();
+
+// TODO: Objectにする
+    var fileReader = new FileReader();
+    fileReader.onload = function(event) {
+      for (var connectionId in this.dataConnections) {
+        this.sendChat(connectionId, event.target.result, true);
+      }
+    }.bind(this);
+    fileReader.readAsArrayBuffer(files[0]);
+//    fileReader.readAsText(files[0]);
+  };
+
+  // Blobをダウンロードする
+  this.downloadBlob = function(blob) {
+    this.download(window.URL.createObjectURL(blob), "test.png");
+  };
+
+  // ファイルを自動でダウンロードする
+  this.download = function(url, filename) {
+    var elem = document.createElement("a");
+    elem.download = filename;
+    elem.href = url;
+    elem.click();
+  }
 });
 
-/**
- *
- */
+
 ko.bindingHandlers.drop = {
   init: function(element, valueAccessor, allBindingsAccessor, viewModel) {
     var callback = valueAccessor();
@@ -170,7 +259,18 @@ ko.bindingHandlers.dragover = {
     element.addEventListener('dragover', callback, false);
   }
 };
-
+ko.bindingHandlers.dragenter = {
+  init: function(element, valueAccessor, allBindingsAccessor, viewModel) {
+    var callback = valueAccessor();
+    element.addEventListener('dragenter', callback, false);
+  }
+};
+ko.bindingHandlers.dragleave = {
+  init: function(element, valueAccessor, allBindingsAccessor, viewModel) {
+    var callback = valueAccessor();
+    element.addEventListener('dragleave', callback, false);
+  }
+};
 
 ko.applyBindings(ConnectVM, document.getElementById('ConnectVM'));
 </script>
